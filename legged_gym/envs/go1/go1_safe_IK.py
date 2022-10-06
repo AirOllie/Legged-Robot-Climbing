@@ -48,7 +48,8 @@ from legged_gym.utils.math import quat_apply_yaw, wrap_to_pi, torch_rand_sqrt_fl
 from legged_gym.utils.helpers import class_to_dict
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg
 from legged_gym.envs.go1.go1_safe_IK_config import LeggedRobotSafeIKCfg
-# from IK_toolbox.pino_robot_ik import CLIK
+from legged_gym.envs.go1.IK_toolbox.pino_robot_ik import CLIK
+from legged_gym.envs.go1.IK_toolbox.go1_torque_controller import addFreeFlyerJointLimits
 
 class Go1SafeIK(BaseTask):
     def __init__(self, cfg: LeggedRobotSafeIKCfg, sim_params, physics_engine, sim_device, headless):
@@ -73,14 +74,10 @@ class Go1SafeIK(BaseTask):
         self.num_obstacles = 6
         self.action_space = cfg.env.action_space
         # add obstacles
-        # self.obstacleA_shape = [0.5, 1.2, 0.5]
-        # self.obstacleB_shape = [0.4, 1.0, 0.1]
-        # self.obstacleC_shape = [0.5, 1.0, 0.15]
-        # self.obstacleD_shape = [0.1, 4.0, 0.1]
-        self.obstacleA_shape = [0.5, 1.2, 0.2]
-        self.obstacleB_shape = [0.4, 1.0, 0.2]
-        self.obstacleC_shape = [0.5, 1.0, 0.15]
-        self.obstacleD_shape = [0.1, 4.0, 0.2]
+        self.obstacleA_shape = [0.5, 4.0, 0.05]
+        self.obstacleB_shape = [0.4, 2.0, 0.08]
+        self.obstacleC_shape = [0.5, 2.0, 0.12]
+        self.obstacleD_shape = [0.1, 4.0, 0.1]
         self.wall_shape = [4.0, 0.05, 1.0]
         self.obstacleA_position = [1, 0]
         self.obstacleB_position = [2, -1]
@@ -94,8 +91,13 @@ class Go1SafeIK(BaseTask):
         self._obstacleD_id = None  # Actor ID corresponding to obstacleD for a given env
         self._wall_left_id = None
         self._wall_right_id = None
+
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
+        self.q_FRs = np.zeros((self.num_envs, 3))
+        self.q_FLs = np.zeros((self.num_envs, 3))
+        self.q_RRs = np.zeros((self.num_envs, 3))
+        self.q_RLs = np.zeros((self.num_envs, 3))
         if not self.headless:
             self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
         self._init_buffers()
@@ -104,6 +106,46 @@ class Go1SafeIK(BaseTask):
 
         self.action_scale = self.cfg.control.action_scale
         self.goal_position = self.env_origins + torch.tensor([self.cfg.env.env_spacing, 0, 0.42],device=self.device)
+        for jx in range(self.num_envs):
+            self.q_FRs[jx, 0] = 0
+            self.q_FLs[jx, 0] = 0
+            self.q_RRs[jx, 0] = 0
+            self.q_RLs[jx, 0] = 0
+            self.q_FRs[jx, 1] = 0.8
+            self.q_FLs[jx, 1] = 0.8
+            self.q_RRs[jx, 1] = 0.8
+            self.q_RLs[jx, 1] = 0.8
+            self.q_FRs[jx, 2] = -1.3
+            self.q_FLs[jx, 2] = -1.3
+            self.q_RRs[jx, 2] = -1.3
+            self.q_RLs[jx, 2] = -1.3
+        from pinocchio.robot_wrapper import RobotWrapper
+        from pathlib import Path
+        import pinocchio as pin
+        mesh_dir = '/home/desong/Documents/Locomotion_pybullet_python-quadrupedal_locomotion'
+        urdf_filename = '/home/desong/Documents/Locomotion_pybullet_python-quadrupedal_locomotion/go1_description/urdf/go1_origin.urdf'
+        # urdf_filename = mesh_dir + '/resources/robots/a1/urdf/a1.urdf'
+        Freebase = True
+
+        id_FR = ['FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint', 'FR_foot_fixed']
+        id_FL = ['FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint', 'FL_foot_fixed']
+        id_RR = ['RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint', 'RR_foot_fixed']
+        id_RL = ['RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint', 'RL_foot_fixed']
+        idFR = []
+        idFL = []
+        idRR = []
+        idRL = []
+        self.robot = RobotWrapper.BuildFromURDF(urdf_filename, mesh_dir, pin.JointModelFreeFlyer())
+        addFreeFlyerJointLimits(self.robot)
+        for i in range(0, len(id_FR)):
+            idFR.append(self.robot.model.getJointId(id_FR[i]))
+            idFL.append(self.robot.model.getJointId(id_FL[i]))
+            idRR.append(self.robot.model.getJointId(id_RR[i]))
+            idRL.append(self.robot.model.getJointId(id_RL[i]))
+        JOINT_ID_FL = idFL[-1]
+        des_FL = np.array([3, 1, 1])
+        oMdes_FL = pin.SE3(np.eye(3), des_FL)
+        self.IK_leg = CLIK(self.robot, oMdes_FL, JOINT_ID_FL, Freebase)
 
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()
@@ -423,8 +465,30 @@ class Go1SafeIK(BaseTask):
         Returns:
             [torch.Tensor]: Torques sent to the simulation
         """
+
+        des_bases = self.root_states.reshape(self.num_envs, 1+self.num_obstacles, -1)[:,0,:3]
+        body_R_deses = actions[:,:3]
+        des_FR_ps = actions[:,3:6]
+        des_FL_ps = actions[:,6:9]
+        des_RR_ps = actions[:,9:12]
+        des_RL_ps = actions[:,12:]
+        Q_cmds = torch.zeros(self.num_envs,12).to(self.device)
+        for k,(des_base, body_R_des, des_FR_p, des_FL_p, des_RR_p, des_RL_p) in enumerate(zip(des_bases, body_R_deses, des_FR_ps, des_FL_ps, des_RR_ps, des_RL_ps)):
+            body_R_des = body_R_des.reshape(3,1)
+            self.q_FRs[k], J_FR = self.IK_leg.ik_close_form(des_base.to(torch.device('cpu')), body_R_des.to(torch.device('cpu')),
+                                                       des_FR_p.to(torch.device('cpu')), self.q_FRs[k], 0, It_max=15, lamda=0.55)
+            self.q_FLs[k], J_FL = self.IK_leg.ik_close_form(des_base.to(torch.device('cpu')), body_R_des.to(torch.device('cpu')),
+                                                       des_FL_p.to(torch.device('cpu')), self.q_FLs[k], 1, It_max=15, lamda=0.55)
+            self.q_RRs[k], J_RR = self.IK_leg.ik_close_form(des_base.to(torch.device('cpu')), body_R_des.to(torch.device('cpu')),
+                                                       des_RR_p.to(torch.device('cpu')), self.q_RRs[k], 2, It_max=15, lamda=0.55)
+            self.q_RLs[k], J_RL = self.IK_leg.ik_close_form(des_base.to(torch.device('cpu')), body_R_des.to(torch.device('cpu')),
+                                                       des_RL_p.to(torch.device('cpu')), self.q_RLs[k], 3, It_max=15, lamda=0.55)
+            Q_cmds[k,0:3] = torch.tensor(self.q_FRs[k,0:3]).to(self.device)
+            Q_cmds[k,3:6] = torch.tensor(self.q_FLs[k,0:3]).to(self.device)
+            Q_cmds[k,6:9] = torch.tensor(self.q_RRs[k,0:3]).to(self.device)
+            Q_cmds[k,9:12] = torch.tensor(self.q_RLs[k,0:3]).to(self.device)
         # pd controller
-        actions_scaled = actions * self.action_scale
+        actions_scaled = Q_cmds * self.action_scale
         control_type = self.cfg.control.control_type
         if control_type == "P":
             torques = self.p_gains * (
@@ -457,8 +521,6 @@ class Go1SafeIK(BaseTask):
 
         # env_ids_int32 = env_ids.to(dtype=torch.int32)
         robot_ids_int32 = robot_ids.to(dtype=torch.int32)
-
-
         self.gym.set_dof_state_tensor_indexed(self.sim,
                                               gymtorch.unwrap_tensor(self.dof_state),
                                               gymtorch.unwrap_tensor(robot_ids_int32), len(robot_ids_int32))
@@ -591,12 +653,12 @@ class Go1SafeIK(BaseTask):
         self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat(
             (self.num_envs, 1))
         self.forward_vec = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
-        self.torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
+        self.torques = torch.zeros(self.num_envs, self.action_space, dtype=torch.float, device=self.device,
                                    requires_grad=False)
-        self.last_torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
+        self.last_torques = torch.zeros(self.num_envs, self.action_space, dtype=torch.float, device=self.device,
                                         requires_grad=False)
-        self.p_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.d_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
+        self.p_gains = torch.zeros(self.action_space, dtype=torch.float, device=self.device, requires_grad=False)
+        self.d_gains = torch.zeros(self.action_space, dtype=torch.float, device=self.device, requires_grad=False)
         self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
                                    requires_grad=False)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
@@ -838,7 +900,9 @@ class Go1SafeIK(BaseTask):
             obstacleC_start_pose.p = gymapi.Vec3(self.obstacleC_position[0], self.obstacleC_position[1], self.obstacleC_shape[2]/2) + gymapi.Vec3(*pos)
             obstacleC_start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
             obstacleD_start_pose = gymapi.Transform()
-            obstacleD_start_pose.p = gymapi.Vec3(self.obstacleD_position[0], self.obstacleD_position[1], self.obstacleD_shape[2]/2) + gymapi.Vec3(*pos)
+            # obstacleD_start_pose.p = gymapi.Vec3(self.obstacleD_position[0], self.obstacleD_position[1], self.obstacleD_shape[2]/2) + gymapi.Vec3(*pos)
+            obstacleD_start_pose.p = gymapi.Vec3(self.obstacleD_position[0], self.obstacleD_position[1],
+                                                 0.3) + gymapi.Vec3(*pos)
             obstacleD_start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
             wall_left_start_pose = gymapi.Transform()
             wall_left_start_pose.p = gymapi.Vec3(self.wall_left_position[0], self.wall_left_position[1], self.wall_shape[2]/2) + gymapi.Vec3(*pos)

@@ -72,10 +72,14 @@ class Go1Safe(BaseTask):
         self._parse_cfg(self.cfg)
         self.num_obstacles = 6
         # add obstacles
-        self.obstacleA_shape = [0.5, 4.0, 0.05]  # 0.03
-        self.obstacleB_shape = [0.4, 2.0, 0.08]  # 0.05
-        self.obstacleC_shape = [0.5, 2.0, 0.1]
-        self.obstacleD_shape = [0.1, 4.0, 0.08]
+        self.obstacleA_shape = [0.5, 4.0, 0.05]
+        self.obstacleB_shape = [0.4, 2.0, 0.08]
+        self.obstacleC_shape = [0.5, 2.0, 0.12]
+        self.obstacleD_shape = [0.1, 4.0, 0.1]
+        # self.obstacleA_shape = [0.5, 1.2, 0.1]
+        # self.obstacleB_shape = [0.4, 1.0, 0.1]
+        # self.obstacleC_shape = [0.5, 1.0, 0.15]
+        # self.obstacleD_shape = [0.1, 4.0, 0.1]
         self.wall_shape = [4.0, 0.05, 1.0]
         self.obstacleA_position = [1, 0]
         self.obstacleB_position = [2, -1]
@@ -99,31 +103,6 @@ class Go1Safe(BaseTask):
 
         self.action_scale = self.cfg.control.action_scale
         self.goal_position = self.env_origins + torch.tensor([self.cfg.env.env_spacing, 0, 0.42],device=self.device)
-
-    def reference_traj(self, positions):
-        """given the coordinate x of the current position, outputs the target height z in tuple
-
-        Args:
-            positions (torch.Tensor): x coordinate of the current position on the map, relative to the origin
-        """
-        height_target = torch.zeros_like(positions, device=self.device, dtype=torch.float)
-        height = 0.4
-        for i, position in enumerate(positions):
-            if position < self.obstacleA_position[0]-self.obstacleA_shape[0]/2:
-                height_target[i] = height
-            elif self.obstacleA_position[0]-self.obstacleA_shape[0]/2 <= position < self.obstacleA_position[0]+self.obstacleA_shape[0]/2:
-                height_target[i] = height + self.obstacleA_shape[2]
-            elif self.obstacleA_position[0]+self.obstacleA_shape[0]/2 <= position < self.obstacleB_position[0]-self.obstacleB_shape[0]/2:
-                height_target[i] = height
-            elif self.obstacleB_position[0]-self.obstacleB_shape[0]/2 <= position < self.obstacleB_position[0]+self.obstacleB_shape[0]/2:
-                height_target[i] = height + self.obstacleB_shape[2]
-            elif self.obstacleB_position[0]+self.obstacleB_shape[0]/2 <= position < self.obstacleD_position[0]-self.obstacleD_shape[0]/2:
-                height_target[i] = height
-            elif self.obstacleD_position[0]-self.obstacleD_shape[0]/2 <= position < self.obstacleD_position[0]-self.obstacleD_shape[0]/2:
-                height_target[i] = 0.3
-            else:
-                height_target[i] = height
-        return height_target
 
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()
@@ -166,10 +145,8 @@ class Go1Safe(BaseTask):
 
         # prepare quantities
         self.base_quat[:] = self.root_states[:, 3:7]
-        # self.base_lin_vel[:] = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 7:10])
-        self.base_lin_vel[:] = quat_rotate_inverse(self.base_robot_quat, self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, 7:10])
-        # self.base_ang_vel[:] = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 10:13])
-        self.base_ang_vel[:] = quat_rotate_inverse(self.base_robot_quat, self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, 10:13])
+        self.base_lin_vel[:] = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 7:10])
+        self.base_ang_vel[:] = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_robot_quat, self.gravity_vec)
 
         self._post_physics_step_callback()
@@ -194,11 +171,10 @@ class Go1Safe(BaseTask):
         self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1, dim=1)
         # test
         # self.leg_collision = torch.any(self.contact_forces[:, self.feet_indices[:2], 0] < -1, dim=1)
-        self.hind_leg_collision = torch.any(self.contact_forces[:, self.feet_indices[2:], 0] < -1, dim=1)
         self.time_out_buf = self.episode_length_buf > self.max_episode_length  # no terminal reward for time-outs
         self.reset_buf = self.time_out_buf
         # self.reset_buf |= self.time_out_buf
-        # self.reset_buf |= self.hind_leg_collision
+        # self.reset_buf |= self.leg_collision
 
     def reset_idx(self, env_ids):
         """ Reset some environments.
@@ -276,8 +252,7 @@ class Go1Safe(BaseTask):
                 states[i][2] -= origin[i][2]
             return states / self.cfg.env.env_spacing
         import copy
-        # normalized_root_states = copy.deepcopy(self.root_robot_states)
-        normalized_root_states = copy.deepcopy(self.root_states.view(self.num_envs, -1, 13)[:,0,:])
+        normalized_root_states = copy.deepcopy(self.root_robot_states)
         normalized_root_states = normalize_robot_state(normalized_root_states, self.env_origins)
         normalized_root_states = normalized_root_states.to(self.device)
 
@@ -288,9 +263,8 @@ class Go1Safe(BaseTask):
                                   (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
                                   self.dof_vel * self.obs_scales.dof_vel,
                                   self.actions,
-                                  normalized_root_states[:,:7]
-                                  ), dim=-1)  # linear velocity * 3, angular velocity * 3, gravity * 3, desired speed * 3,
-                                        # joint position * 12, joint velocity * 12, joint action * 12, global state * 7
+                                  normalized_root_states
+                                  ), dim=-1)
         # add perceptive inputs if not blind
         if self.cfg.terrain.measure_heights:
             heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1,
@@ -519,10 +493,8 @@ class Go1Safe(BaseTask):
         """ Random pushes the robots. Emulates an impulse by setting a randomized base velocity.
         """
         max_vel = self.cfg.domain_rand.max_push_vel_xy
-        # self.root_robot_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2),
-        #                                             device=self.device)  # lin vel x/y
-        self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2),
-                                                          device=self.device)  # lin vel x/y
+        self.root_robot_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2),
+                                                    device=self.device)  # lin vel x/y
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
 
     def _update_terrain_curriculum(self, env_ids):
@@ -603,13 +575,12 @@ class Go1Safe(BaseTask):
 
         # create some wrapper tensors for different slices
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
-        # self.root_robot_states = gymtorch.wrap_tensor(actor_root_state).view(self.num_envs, -1, 13)[:,0,:]
+        self.root_robot_states = gymtorch.wrap_tensor(actor_root_state).view(self.num_envs, -1, 13)[:,0,:]
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
         self.base_quat = self.root_states[:, 3:7]
-        # self.base_robot_quat = self.root_robot_states[:, 3:7]
-        self.base_robot_quat = self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, 3:7]
+        self.base_robot_quat = self.root_robot_states[:, 3:7]
 
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1,
                                                                             3)  # shape: num_envs, num_bodies, xyz axis
@@ -645,10 +616,10 @@ class Go1Safe(BaseTask):
                                          requires_grad=False)
         self.last_contacts_hind = torch.zeros(self.num_envs, len(self.feet_indices[2:]), dtype=torch.bool, device=self.device,
                                          requires_grad=False)
-        # self.base_lin_vel = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 7:10])
-        self.base_lin_vel = quat_rotate_inverse(self.base_robot_quat, self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, 7:10])
-        # self.base_ang_vel = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 10:13])
-        self.base_ang_vel = quat_rotate_inverse(self.base_robot_quat, self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, 10:13])
+        self.base_lin_vel = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 7:10])
+        # self.base_lin_vel = quat_rotate_inverse(self.base_quat[0], self.root_states[:, :, 7:10][0])
+        self.base_ang_vel = quat_rotate_inverse(self.base_robot_quat, self.root_robot_states[:, 10:13])
+        # self.base_ang_vel = quat_rotate_inverse(self.base_quat[0], self.root_states[:, :, 10:13][0])
         self.projected_gravity = quat_rotate_inverse(self.base_robot_quat, self.gravity_vec)
         if self.cfg.terrain.measure_heights:
             self.height_points = self._init_height_points()
@@ -874,7 +845,7 @@ class Go1Safe(BaseTask):
             obstacleD_start_pose = gymapi.Transform()
             # obstacleD_start_pose.p = gymapi.Vec3(self.obstacleD_position[0], self.obstacleD_position[1], self.obstacleD_shape[2]/2) + gymapi.Vec3(*pos)
             obstacleD_start_pose.p = gymapi.Vec3(self.obstacleD_position[0], self.obstacleD_position[1],
-                                                 0.35) + gymapi.Vec3(*pos)
+                                                 0.3) + gymapi.Vec3(*pos)
             obstacleD_start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
             wall_left_start_pose = gymapi.Transform()
             wall_left_start_pose.p = gymapi.Vec3(self.wall_left_position[0], self.wall_left_position[1], self.wall_shape[2]/2) + gymapi.Vec3(*pos)
@@ -1062,11 +1033,9 @@ class Go1Safe(BaseTask):
         return torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
 
     def _reward_base_height(self):
-        # Penalize base height away from reference trajectory
-        position = self.root_states.view(self.num_envs, -1, 13)[:, 0, :][:, 0]-self.env_origins[:, 0]
-        base_height_target = self.reference_traj(position)
-        base_height = torch.mean(self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, 2].unsqueeze(1) - self.measured_heights, dim=1)
-        return torch.square(base_height - base_height_target)
+        # Penalize base height away from target
+        base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
+        return torch.square(base_height - self.cfg.rewards.base_height_target)
 
     def _reward_torques(self):
         # Penalize torques
@@ -1166,8 +1135,7 @@ class Go1Safe(BaseTask):
 
     def _reward_distance_to_goal(self):
         # penalize for being farther away from goal
-        # return torch.norm(self.root_robot_states[:,:3]-self.goal_position[:], dim=1)
-        return torch.norm(self.root_states.view(self.num_envs, -1, 13)[:,0,:][:, :3] - self.goal_position[:], dim=1)
+        return torch.norm(self.root_robot_states[:,:3]-self.goal_position[:], dim=1)
 
     def _reward_mass_center(self):
         # add constraints to the mass center
@@ -1176,14 +1144,11 @@ class Go1Safe(BaseTask):
     def _reward_footstep(self):
         # add constraints to the footsteps
         # punish the front legs for touching the side of obstacles, reward them for touching the top of the obstacles
-        # reward the hind legs for touching the side and the top of obstacles
-
-        # return torch.any(self.contact_forces[:, self.feet_indices[:2], 0] > 1, dim=1) + \
-        #        torch.any(self.contact_forces[:, self.feet_indices[:2], 0] < -1, dim=1) * (-1) + \
-        #        torch.any(self.contact_forces[:, self.feet_indices[2:], 0] > 1, dim=1) * (-1) + \
-        #        torch.any(self.contact_forces[:, self.feet_indices[2:], 0] < -1, dim=1) * (-1)
-        return torch.any(self.contact_forces[:, self.feet_indices[2:], 0] < -1, dim=1) * (-1)
-
+        # reward the rear legs for touching the side and the top of obstacles
+        return torch.any(self.contact_forces[:, self.feet_indices[:2], 0] > 1, dim=1) + \
+               torch.any(self.contact_forces[:, self.feet_indices[:2], 0] < -1, dim=1) * (-1) + \
+               torch.any(self.contact_forces[:, self.feet_indices[2:], 0] > 1, dim=1) + \
+               torch.any(self.contact_forces[:, self.feet_indices[2:], 0] < -1, dim=1) * (-1)
 
     def _reward_hind_feet_air_time(self):
         # Reward long steps
