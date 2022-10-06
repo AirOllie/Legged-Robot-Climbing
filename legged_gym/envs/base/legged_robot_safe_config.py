@@ -34,7 +34,7 @@ from .base_config import BaseConfig
 class LeggedRobotSafeCfg(BaseConfig):
     class env:
         num_envs = 4096
-        num_observations = 61  # 48+13
+        num_observations = 61  # 48+7
         num_privileged_obs = None  # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise
         num_actions = 12
         env_spacing = 4.  # not used with heightfields/trimeshes
@@ -149,24 +149,25 @@ class LeggedRobotSafeCfg(BaseConfig):
             termination = -0.0
             tracking_lin_vel = 1.0
             tracking_ang_vel = 0.5
-            lin_vel_z = -2.0
-            ang_vel_xy = -0.05
+            lin_vel_z = 0
+            ang_vel_xy = 0
             orientation = -0.
             torques = -0.00001
             dof_vel = -0.
-            dof_acc = -2.5e-7  #
-            base_height = -0.
+            dof_acc = -2.5e-7
+            base_height = -2
             feet_air_time = 0.5
-            collision = -1.
+            collision = -2
             feet_stumble = -0.0
-            action_rate = -0.01  #
+            action_rate = -0.01
             stand_still = -0.
             action_topos = -0.
             action_magnitude = -0.01
             torques_smooth = -0.0003  # for flat
             energy = -0  # 0.003
-            distance_to_goal = -0.1  # gradually increased to 1
-            footstep = 0.1
+            distance_to_goal = -0.1  # gradually increased to -1
+            footstep = 0.0  # 0.5
+            hind_feet_air_time = 0  # 0.01
 
         only_positive_rewards = True  # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25  # tracking reward = exp(-error^2/sigma)
@@ -265,10 +266,9 @@ class LeggedRobotSafeCfgPPO(BaseConfig):
         experiment_name = 'test'
         run_name = ''
         # load and resume
+        # resume = True
         resume = False
-        # load_run = -1  # -1 = last run
-        load_run = 'Aug22_10-36-03_'
-        # load_run = 'Aug18_17-53-08_'  # normal
-        # load_run = 'Aug19_09-16-41_'  # easy
+        # load_run = -1
+        load_run = 'Oct04_14-15-19_'
         checkpoint = -1  # -1 = last saved model
         resume_path = None  # updated from load_run and chkpt

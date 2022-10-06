@@ -34,13 +34,13 @@ from .base_config import BaseConfig
 class LeggedRobotSafeIKCfg(BaseConfig):
     class env:
         num_envs = 4096
-        num_observations = 61  # 48+13
+        num_observations = 64  # 48+15
         num_privileged_obs = None  # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise
-        num_actions = 12
+        num_actions = 15
         env_spacing = 4.  # not used with heightfields/trimeshes
         send_timeouts = True  # send time out information to the algorithm
         episode_length_s = 20  # episode length in seconds
-        action_space = 15
+        action_space = 12
 
     class terrain:
         # mesh_type = 'trimesh' # "heightfield" # none, plane, heightfield or trimesh
@@ -189,7 +189,7 @@ class LeggedRobotSafeIKCfg(BaseConfig):
         clip_actions = 100.
 
     class noise:
-        add_noise = True
+        add_noise = False
         noise_level = 1.0  # scales other values
 
         class noise_scales:
@@ -269,7 +269,7 @@ class LeggedRobotSafeIKCfgPPO(BaseConfig):
         resume = False
         # load_run = 'Aug16_16-38-24_'  # -1 = last run
         # load_run = 'Aug16_16-39-29_'
-        load_run = 'Aug18_14-18-27_'  # easy
+        load_run = -1
         # load_run = 'Aug18_11-57-46_'  # normal
         checkpoint = -1  # -1 = last saved model
         resume_path = None  # updated from load_run and chkpt
